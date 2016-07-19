@@ -1,0 +1,184 @@
+#!/usr/bin/python
+# Fortify parser by Evan Teitelman
+# Version 1.0
+
+import csv
+import sys
+import os
+import re
+from odf import *
+from odf.opendocument import *
+from odf.style import *
+from odf.number import *
+from odf.text import *
+from odf.table import *
+from odf.teletype import *
+
+def do_print(prefix, line, end='\n'):
+    print(prefix + line)
+
+def print_good(line, end='\n'):
+    do_print('[+] ', line, end)
+
+def print_info(line, end='\n'):
+    do_print('[-] ', line, end)
+
+def print_error(line, end='\n'):
+    do_print('[!] ', line, end)
+
+def die(line):
+    print_error(line)
+    exit(1)
+
+# CSV
+def head_to_id(head):
+    ret = head
+    ret = ret.lower()
+    ret = ret.replace(' ', '_')
+    ret = ret.replace('-', '_')
+    while '__' in ret:
+        ret = ret.replace('__', '_')
+    return ret
+
+def parse_csv(filename):
+    ret = []
+    f = open(filename, 'rb')
+    reader = csv.reader(f)
+    rows = list(reader)
+    headers = rows[0]
+    for row in rows[1:]:
+        d = {}
+        for (head, val) in zip(headers, row):
+            head = head_to_id(head)
+            d[head] = val
+        ret += [d]
+    f.close()
+    return ret
+
+def print_syntax():
+    print('syntax: parse_fortify <file.csv>')
+
+def sort_by_severity(bugs):
+    risk_order = {'Low': 4,
+                  'Medium': 3,
+                  'High': 2,
+                  'Critical': 1}
+
+    # Add risk values
+    for bug in bugs:
+        bug['risk_value'] = risk_order[bug['severity']]
+
+    new_bugs = sorted(bugs, key=lambda k: k['risk_value'])
+    return new_bugs
+
+def sort_by_category(bugs):
+    new_bugs = sorted(bugs, key=lambda k: k['category'])
+    return new_bugs
+
+def add_locations(bugs):
+    for bug in bugs:
+        bug['real_location'] = '{0} line {1}'.format(bug['location_full'], bug['line_number'])
+    return bugs
+
+def add_numbers(bugs):
+    n = 0
+    for bug in bugs:
+        bug['num'] = str(n)
+        n += 1
+    return bugs
+
+def clean_description(desc):
+    desc = desc.replace('<b>', '')
+    desc = desc.replace('</b>', '')
+    return desc
+
+def clean_descriptions(bugs):
+    new_bugs = []
+    for bug in bugs:
+        bug['description'] = clean_description(bug['description'])
+        new_bugs += [bug]
+    return new_bugs
+
+def main():
+    if len(sys.argv) < 2:
+        print_syntax()
+        exit(1)
+
+    out_name = sys.argv[1]
+    if not out_name.endswith('.odt'):
+        die('invalid output name: {0}'.format(out_name))
+
+    bugs = []
+    for arg in sys.argv[2:]:
+        bugs += parse_csv(arg)
+
+    print('read {0} bugs'.format(len(bugs)))
+
+    for key in bugs[0]:
+        print('{0}: {1}'.format(key, bugs[0][key]))
+
+    # Clean descriptions
+    bugs = clean_descriptions(bugs)
+
+    # Make locations
+    bugs = add_locations(bugs)
+
+    # Sort by category
+    bugs = sort_by_category(bugs)
+
+    # Sort by severity
+    bugs = sort_by_severity(bugs)
+
+    # Add numbers
+    bugs = add_numbers(bugs)
+
+    write_to_doc(bugs, out_name)
+
+def write_to_doc(bugs, name):
+    # Begin document
+    doc = OpenDocumentText()
+
+    # Begin table
+    table = Table()
+
+    # Make header
+    table.addElement(TableColumn(numbercolumnsrepeated=6))
+    tr = TableRow()
+    for column in ['Number', 'Application', 'Location', 'Category', 'Severity', 'Description']:
+        tc = TableCell()
+        tc.addElement(P(text=unicode(column, 'utf-8')))
+        tr.addElement(tc)
+    table.addElement(tr)
+
+    # Write cells
+    for bug in bugs:
+        tr = TableRow()
+        # num app name desc rec
+        vals = []
+        vals += [bug['num']]
+        vals += ['www.kemi.com']
+
+        # Class/procedure
+        m = re.match('The method <b>([^<]+)</b> in <b>([^<]+)</b>', bug['description'])
+        if not m:
+            vals += [bug['location'] + ' line ' + bug['line_number']]
+        else:
+            vals += [m.group(1) + ' in ' + m.group(2) + ' line ' + bug['line_number']]
+
+        vals += [bug['category']]
+        vals += [bug['severity']]
+        vals += [bug['description']]
+        for val in vals:
+            tc = TableCell()
+            paragraph = P()
+            addTextToElement(paragraph, val)
+            tc.addElement(paragraph)
+            tr.addElement(tc)
+        table.addElement(tr)
+
+    # Finish document
+    doc.text.addElement(table)
+    doc.save(name)
+
+if __name__ == '__main__':
+    main()
